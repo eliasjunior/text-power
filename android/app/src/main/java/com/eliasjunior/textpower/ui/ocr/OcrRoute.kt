@@ -14,6 +14,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,7 +28,12 @@ import com.eliasjunior.textpower.history.OcrSessionStore
 import com.eliasjunior.textpower.ocr.BitmapLoader
 import com.eliasjunior.textpower.ocr.OcrImageProcessor
 import com.eliasjunior.textpower.ocr.OcrProcessor
+import com.eliasjunior.textpower.ocr.OcrTextFormatter.CleaningLevel
 import com.eliasjunior.textpower.ocr.OcrTextFormatter
+import com.eliasjunior.textpower.tts.AndroidTextSpeaker
+import com.eliasjunior.textpower.tts.TextSpeaker
+import com.eliasjunior.textpower.tts.TtsPreferences
+import com.eliasjunior.textpower.tts.TtsPreferencesStore
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
@@ -35,6 +41,7 @@ import com.google.mlkit.vision.text.Text
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -49,6 +56,8 @@ fun OcrRoute() {
     val ocrTextFormatter = remember { OcrTextFormatter() }
     val bitmapLoader = remember(context) { BitmapLoader(context) }
     val sessionStore = remember(context) { OcrSessionStore(context) }
+    val textSpeaker = remember(context) { AndroidTextSpeaker(context) }
+    val ttsPreferencesStore = remember(context) { TtsPreferencesStore(context) }
     val scope = rememberCoroutineScope()
 
     var imageUri by remember { mutableStateOf<Uri?>(null) }
@@ -58,8 +67,14 @@ fun OcrRoute() {
     var isProcessing by remember { mutableStateOf(false) }
     var processingStatus by remember { mutableStateOf<String?>(null) }
     var processingProgress by remember { mutableStateOf<Float?>(null) }
+    var playbackStatus by remember { mutableStateOf<String?>(null) }
+    var speechRate by remember { mutableStateOf(1.0f) }
+    var pitch by remember { mutableStateOf(1.0f) }
+    var selectedVoiceName by remember { mutableStateOf<String?>(null) }
+    var voiceOptions by remember { mutableStateOf<List<SelectionOption>>(emptyList()) }
     var preprocessEnabled by remember { mutableStateOf(true) }
     var filterByBlocks by remember { mutableStateOf(true) }
+    var cleaningLevel by remember { mutableStateOf(CleaningLevel.NORMAL) }
     var multiPageScanEnabled by remember { mutableStateOf(false) }
 
     val scannerOptions = remember(multiPageScanEnabled) {
@@ -72,14 +87,21 @@ fun OcrRoute() {
     }
     val scanner = remember(scannerOptions) { GmsDocumentScanning.getClient(scannerOptions) }
 
+    DisposableEffect(textSpeaker) {
+        onDispose {
+            textSpeaker.shutdown()
+        }
+    }
+
     val pickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         imageUri = uri
         extractedText = ""
-        processingStatus = null
-        processingProgress = null
-    }
+            processingStatus = null
+            processingProgress = null
+            playbackStatus = null
+        }
 
     val scannerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
@@ -90,6 +112,7 @@ fun OcrRoute() {
         val scannedUris = scanResult?.pages?.map { it.imageUri }?.filterNotNull().orEmpty()
         imageUri = scannedUris.firstOrNull()
         extractedText = ""
+        playbackStatus = null
 
         if (scannedUris.isNotEmpty()) {
             scope.launch {
@@ -109,7 +132,7 @@ fun OcrRoute() {
                             ocrImageProcessor.preprocessIfRequested(bitmap, preprocessEnabled)
                         }
                         val resultText = ocrProcessor.process(prepared).awaitResult()
-                        val pageText = ocrTextFormatter.format(resultText, filterByBlocks)
+                        val pageText = ocrTextFormatter.format(resultText, filterByBlocks, cleaningLevel)
                         processingProgress = current.toFloat() / total.toFloat()
                         if (pageText.isNotBlank()) {
                             val header = if (multiPageScanEnabled || scannedUris.size > 1) {
@@ -148,6 +171,30 @@ fun OcrRoute() {
         sessions = withContext(Dispatchers.IO) {
             sessionStore.loadSessions()
         }
+
+        val prefs = withContext(Dispatchers.IO) { ttsPreferencesStore.load() }
+        speechRate = prefs.speechRate
+        pitch = prefs.pitch
+        selectedVoiceName = prefs.voiceName
+
+        textSpeaker.setSpeechRate(speechRate)
+        textSpeaker.setPitch(pitch)
+        if (!selectedVoiceName.isNullOrBlank()) {
+            textSpeaker.setVoice(selectedVoiceName)
+        }
+
+        voiceOptions = buildPreferredVoiceOptions(textSpeaker.getAvailableVoices())
+    }
+
+    fun persistTtsPreferences() {
+        ttsPreferencesStore.save(
+            TtsPreferences(
+                speechRate = speechRate,
+                pitch = pitch,
+                languageTag = "",
+                voiceName = selectedVoiceName
+            )
+        )
     }
 
     OcrScreen(
@@ -158,8 +205,14 @@ fun OcrRoute() {
             isProcessing = isProcessing,
             processingStatus = processingStatus,
             processingProgress = processingProgress,
+            playbackStatus = playbackStatus,
+            speechRate = speechRate,
+            pitch = pitch,
+            selectedVoiceName = selectedVoiceName,
+            voiceOptions = voiceOptions,
             preprocessEnabled = preprocessEnabled,
             filterByBlocks = filterByBlocks,
+            cleaningLevel = cleaningLevel,
             multiPageScanEnabled = multiPageScanEnabled
         ),
         onPickImage = {
@@ -197,7 +250,8 @@ fun OcrRoute() {
                             ocrImageProcessor.preprocessIfRequested(sourceBitmap, preprocessEnabled)
                         }
                         val resultText = ocrProcessor.process(prepared).awaitResult()
-                        extractedText = ocrTextFormatter.format(resultText, filterByBlocks)
+                        extractedText = ocrTextFormatter.format(resultText, filterByBlocks, cleaningLevel)
+                        playbackStatus = null
                     } catch (err: Exception) {
                         extractedText = ""
                         Toast.makeText(
@@ -211,6 +265,34 @@ fun OcrRoute() {
                         isProcessing = false
                     }
                 }
+            }
+        },
+        onPlayText = {
+            textSpeaker.setSpeechRate(speechRate)
+            textSpeaker.setPitch(pitch)
+            textSpeaker.setVoice(selectedVoiceName)
+            val result = textSpeaker.start(extractedText)
+            playbackStatus = result.message ?: when (result.state) {
+                TextSpeaker.SpeakerState.SPEAKING -> "Speaking…"
+                TextSpeaker.SpeakerState.UNINITIALIZED -> "TTS is initializing."
+                TextSpeaker.SpeakerState.ERROR -> "TTS failed to start."
+                else -> "Playback not started."
+            }
+        },
+        onPauseText = {
+            val result = textSpeaker.pause()
+            playbackStatus = result.message ?: when (result.state) {
+                TextSpeaker.SpeakerState.PAUSED -> "Paused."
+                TextSpeaker.SpeakerState.ERROR -> "Pause failed."
+                else -> "Paused."
+            }
+        },
+        onStopText = {
+            val result = textSpeaker.stop()
+            playbackStatus = result.message ?: when (result.state) {
+                TextSpeaker.SpeakerState.STOPPED -> "Stopped."
+                TextSpeaker.SpeakerState.ERROR -> "Stop failed."
+                else -> "Stopped."
             }
         },
         onCopyText = {
@@ -274,10 +356,88 @@ fun OcrRoute() {
                 }
             }
         },
+        onSetSpeechRate = { value ->
+            speechRate = value
+            textSpeaker.setSpeechRate(value)
+            persistTtsPreferences()
+        },
+        onSetPitch = { value ->
+            pitch = value
+            textSpeaker.setPitch(value)
+            persistTtsPreferences()
+        },
+        onSetVoiceName = { name ->
+            selectedVoiceName = name
+            val result = textSpeaker.setVoice(name)
+            if (!result.success) {
+                playbackStatus = result.message ?: "Voice change failed."
+            }
+            persistTtsPreferences()
+        },
         onSetPreprocessEnabled = { preprocessEnabled = it },
         onSetFilterByBlocks = { filterByBlocks = it },
+        onSetCleaningLevel = { cleaningLevel = it },
         onSetMultiPageScanEnabled = { multiPageScanEnabled = it }
     )
+}
+
+private fun buildPreferredVoiceOptions(
+    voices: List<TextSpeaker.SpeakerVoice>
+): List<SelectionOption> {
+    if (voices.isEmpty()) return emptyList()
+
+    val preferred = listOf(
+        "en-US" to "English (US)",
+        "en-GB" to "English (UK)",
+        "en-IE" to "English (Ireland)",
+        "pt-BR" to "Portuguese (Brazil)",
+        "es-ES" to "Spanish (Spain)",
+        "es-US" to "Spanish (US)"
+    )
+
+    val usedVoiceNames = mutableSetOf<String>()
+    val options = mutableListOf<SelectionOption>()
+    for ((tag, label) in preferred) {
+        val voice = selectBestVoiceForTag(voices, tag, usedVoiceNames) ?: continue
+        usedVoiceNames.add(voice.name)
+        options.add(SelectionOption(id = voice.name, label = label))
+    }
+    return options
+}
+
+private fun selectBestVoiceForTag(
+    voices: List<TextSpeaker.SpeakerVoice>,
+    targetTag: String,
+    usedVoiceNames: Set<String>
+): TextSpeaker.SpeakerVoice? {
+    val target = normalizeTag(targetTag)
+    val targetLocale = Locale.forLanguageTag(target)
+    val targetLang = targetLocale.language
+    val targetCountry = targetLocale.country
+
+    fun available(): List<TextSpeaker.SpeakerVoice> = voices.filterNot { usedVoiceNames.contains(it.name) }
+
+    // 1) Exact canonical match.
+    available().firstOrNull { normalizeTag(it.languageTag) == target }?.let { return it }
+
+    // 2) Same language + country.
+    available().firstOrNull { voice ->
+        val locale = Locale.forLanguageTag(normalizeTag(voice.languageTag))
+        locale.language.equals(targetLang, ignoreCase = true) &&
+            locale.country.equals(targetCountry, ignoreCase = true)
+    }?.let { return it }
+
+    // 3) Same base language.
+    available().firstOrNull { voice ->
+        val locale = Locale.forLanguageTag(normalizeTag(voice.languageTag))
+        locale.language.equals(targetLang, ignoreCase = true)
+    }?.let { return it }
+
+    return null
+}
+
+private fun normalizeTag(tag: String): String {
+    return tag.trim().replace('_', '-').lowercase(Locale.ROOT)
 }
 
 private suspend fun com.google.android.gms.tasks.Task<Text>.awaitResult(): Text =

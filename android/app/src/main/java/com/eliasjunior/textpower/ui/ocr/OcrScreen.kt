@@ -22,6 +22,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -44,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.eliasjunior.textpower.history.OcrSession
+import com.eliasjunior.textpower.ocr.OcrTextFormatter.CleaningLevel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -55,8 +58,14 @@ data class OcrUiState(
     val isProcessing: Boolean = false,
     val processingStatus: String? = null,
     val processingProgress: Float? = null,
+    val playbackStatus: String? = null,
+    val speechRate: Float = 1.0f,
+    val pitch: Float = 1.0f,
+    val selectedVoiceName: String? = null,
+    val voiceOptions: List<SelectionOption> = emptyList(),
     val preprocessEnabled: Boolean = true,
     val filterByBlocks: Boolean = true,
+    val cleaningLevel: CleaningLevel = CleaningLevel.NORMAL,
     val multiPageScanEnabled: Boolean = false
 )
 
@@ -66,6 +75,12 @@ fun OcrScreen(
     onPickImage: () -> Unit,
     onScanDocument: () -> Unit,
     onRecognize: () -> Unit,
+    onPlayText: () -> Unit,
+    onPauseText: () -> Unit,
+    onStopText: () -> Unit,
+    onSetSpeechRate: (Float) -> Unit,
+    onSetPitch: (Float) -> Unit,
+    onSetVoiceName: (String?) -> Unit,
     onCopyText: () -> Unit,
     onShareText: () -> Unit,
     onSaveSession: () -> Unit,
@@ -74,6 +89,7 @@ fun OcrScreen(
     onClearHistory: () -> Unit,
     onSetPreprocessEnabled: (Boolean) -> Unit,
     onSetFilterByBlocks: (Boolean) -> Unit,
+    onSetCleaningLevel: (CleaningLevel) -> Unit,
     onSetMultiPageScanEnabled: (Boolean) -> Unit
 ) {
     var readerFontSize by remember { mutableStateOf(22f) }
@@ -119,6 +135,11 @@ fun OcrScreen(
             onCheckedChange = onSetFilterByBlocks
         )
 
+        CleaningLevelSelector(
+            selected = state.cleaningLevel,
+            onSelect = onSetCleaningLevel
+        )
+
         OcrSwitchRow(
             label = "Multi-page scan mode",
             checked = state.multiPageScanEnabled,
@@ -143,6 +164,52 @@ fun OcrScreen(
         }
 
         Text(text = "Readable Mode", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onPlayText,
+                enabled = state.extractedText.isNotBlank()
+            ) { Text("Play") }
+            Button(
+                onClick = onPauseText,
+                enabled = state.extractedText.isNotBlank()
+            ) { Text("Pause") }
+            Button(
+                onClick = onStopText,
+                enabled = state.extractedText.isNotBlank()
+            ) { Text("Stop") }
+        }
+        state.playbackStatus?.let { status ->
+            Text(
+                text = status,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            text = "Voice settings",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(text = "Rate: ${"%.2f".format(state.speechRate)}", style = MaterialTheme.typography.labelSmall)
+        Slider(
+            value = state.speechRate,
+            onValueChange = onSetSpeechRate,
+            valueRange = 0.5f..1.8f
+        )
+        Text(text = "Pitch: ${"%.2f".format(state.pitch)}", style = MaterialTheme.typography.labelSmall)
+        Slider(
+            value = state.pitch,
+            onValueChange = onSetPitch,
+            valueRange = 0.5f..1.8f
+        )
+        SelectionMenu(
+            label = "Voice",
+            selected = state.selectedVoiceName ?: "default",
+            options = listOf(SelectionOption("default", "Default")) + state.voiceOptions,
+            onSelect = { selectedId ->
+                onSetVoiceName(if (selectedId == "default") null else selectedId)
+            }
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = onCopyText,
@@ -218,6 +285,68 @@ fun OcrScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SelectionMenu(
+    label: String,
+    selected: String,
+    options: List<SelectionOption>,
+    onSelect: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = options.firstOrNull { it.id == selected }?.label ?: selected
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        TextButton(onClick = { expanded = true }) {
+            Text(selectedLabel)
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            for (option in options) {
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = {
+                        expanded = false
+                        onSelect(option.id)
+                    }
+                )
+            }
+        }
+    }
+}
+
+data class SelectionOption(
+    val id: String,
+    val label: String
+)
+
+@Composable
+private fun CleaningLevelSelector(
+    selected: CleaningLevel,
+    onSelect: (CleaningLevel) -> Unit
+) {
+    Text(
+        text = "Cleaning level",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = { onSelect(CleaningLevel.NORMAL) },
+            enabled = selected != CleaningLevel.NORMAL
+        ) { Text("Normal") }
+        Button(
+            onClick = { onSelect(CleaningLevel.AGGRESSIVE) },
+            enabled = selected != CleaningLevel.AGGRESSIVE
+        ) { Text("Aggressive") }
     }
 }
 
