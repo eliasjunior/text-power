@@ -22,14 +22,17 @@ import androidx.compose.ui.platform.LocalContext
 import com.eliasjunior.textpower.ocr.BitmapLoader
 import com.eliasjunior.textpower.ocr.OcrImageProcessor
 import com.eliasjunior.textpower.ocr.OcrProcessor
-import com.eliasjunior.textpower.ocr.OcrScoredLine
 import com.eliasjunior.textpower.ocr.OcrTextFormatter
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import com.google.mlkit.vision.text.Text
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 @Composable
 fun OcrRoute() {
@@ -42,30 +45,29 @@ fun OcrRoute() {
     val bitmapLoader = remember(context) { BitmapLoader(context) }
     val scope = rememberCoroutineScope()
 
-    val scannerOptions = remember {
+    var imageUri by remember { mutableStateOf<Uri?>(null) }
+    var loadedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var extractedText by remember { mutableStateOf("") }
+    var isProcessing by remember { mutableStateOf(false) }
+    var preprocessEnabled by remember { mutableStateOf(true) }
+    var filterByBlocks by remember { mutableStateOf(true) }
+    var multiPageScanEnabled by remember { mutableStateOf(false) }
+
+    val scannerOptions = remember(multiPageScanEnabled) {
         GmsDocumentScannerOptions.Builder()
             .setGalleryImportAllowed(true)
-            .setPageLimit(1)
+            .setPageLimit(if (multiPageScanEnabled) 10 else 1)
             .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
             .build()
     }
-    val scanner = remember { GmsDocumentScanning.getClient(scannerOptions) }
-
-    var imageUri by remember { mutableStateOf<Uri?>(null) }
-    var loadedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var extractedText by remember { mutableStateOf("") }
-    var scoredLines by remember { mutableStateOf<List<OcrScoredLine>>(emptyList()) }
-    var isProcessing by remember { mutableStateOf(false) }
-    var preprocessEnabled by remember { mutableStateOf(true) }
-    var filterByBlocks by remember { mutableStateOf(true) }
+    val scanner = remember(scannerOptions) { GmsDocumentScanning.getClient(scannerOptions) }
 
     val pickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         imageUri = uri
         extractedText = ""
-        scoredLines = emptyList()
     }
 
     val scannerLauncher = rememberLauncherForActivityResult(
@@ -74,10 +76,44 @@ fun OcrRoute() {
         if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
 
         val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
-        val scannedUri = scanResult?.pages?.firstOrNull()?.imageUri
-        imageUri = scannedUri
+        val scannedUris = scanResult?.pages?.map { it.imageUri }?.filterNotNull().orEmpty()
+        imageUri = scannedUris.firstOrNull()
         extractedText = ""
-        scoredLines = emptyList()
+
+        if (scannedUris.isNotEmpty()) {
+            scope.launch {
+                isProcessing = true
+                val outputPages = mutableListOf<String>()
+                try {
+                    for ((index, uri) in scannedUris.withIndex()) {
+                        val bitmap = withContext(Dispatchers.IO) { bitmapLoader.load(uri) }
+                        val prepared = withContext(Dispatchers.Default) {
+                            ocrImageProcessor.preprocessIfRequested(bitmap, preprocessEnabled)
+                        }
+                        val resultText = ocrProcessor.process(prepared).awaitResult()
+                        val pageText = ocrTextFormatter.format(resultText, filterByBlocks)
+                        if (pageText.isNotBlank()) {
+                            val header = if (multiPageScanEnabled || scannedUris.size > 1) {
+                                "Page ${index + 1}\n\n"
+                            } else {
+                                ""
+                            }
+                            outputPages.add(header + pageText)
+                        }
+                    }
+                    extractedText = outputPages.joinToString("\n\n")
+                } catch (err: Exception) {
+                    extractedText = ""
+                    Toast.makeText(
+                        context,
+                        "OCR failed: ${err.localizedMessage ?: "unknown error"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } finally {
+                    isProcessing = false
+                }
+            }
+        }
     }
 
     LaunchedEffect(imageUri) {
@@ -94,10 +130,10 @@ fun OcrRoute() {
         state = OcrUiState(
             previewBitmap = loadedBitmap?.asImageBitmap(),
             extractedText = extractedText,
-            scoredLines = scoredLines,
             isProcessing = isProcessing,
             preprocessEnabled = preprocessEnabled,
-            filterByBlocks = filterByBlocks
+            filterByBlocks = filterByBlocks,
+            multiPageScanEnabled = multiPageScanEnabled
         ),
         onPickImage = {
             pickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -127,34 +163,43 @@ fun OcrRoute() {
                 isProcessing = true
 
                 scope.launch {
-                    val prepared = withContext(Dispatchers.Default) {
-                        ocrImageProcessor.preprocessIfRequested(sourceBitmap, preprocessEnabled)
+                    try {
+                        val prepared = withContext(Dispatchers.Default) {
+                            ocrImageProcessor.preprocessIfRequested(sourceBitmap, preprocessEnabled)
+                        }
+                        val resultText = ocrProcessor.process(prepared).awaitResult()
+                        extractedText = ocrTextFormatter.format(resultText, filterByBlocks)
+                    } catch (err: Exception) {
+                        extractedText = ""
+                        Toast.makeText(
+                            context,
+                            "OCR failed: ${err.localizedMessage ?: "unknown error"}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        isProcessing = false
                     }
-
-                    ocrProcessor.process(prepared)
-                        .addOnSuccessListener { result ->
-                            val formatted = ocrTextFormatter.format(result, filterByBlocks)
-                            extractedText = formatted.plainText
-                            scoredLines = formatted.scoredLines
-                            isProcessing = false
-                        }
-                        .addOnFailureListener { err ->
-                            extractedText = ""
-                            scoredLines = emptyList()
-                            isProcessing = false
-                            Toast.makeText(
-                                context,
-                                "OCR failed: ${err.localizedMessage ?: "unknown error"}",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
                 }
             }
         },
         onSetPreprocessEnabled = { preprocessEnabled = it },
-        onSetFilterByBlocks = { filterByBlocks = it }
+        onSetFilterByBlocks = { filterByBlocks = it },
+        onSetMultiPageScanEnabled = { multiPageScanEnabled = it }
     )
 }
+
+private suspend fun com.google.android.gms.tasks.Task<Text>.awaitResult(): Text =
+    suspendCancellableCoroutine { continuation ->
+        addOnSuccessListener { result ->
+            if (continuation.isActive) continuation.resume(result)
+        }
+        addOnFailureListener { err ->
+            if (continuation.isActive) continuation.resumeWithException(err)
+        }
+        addOnCanceledListener {
+            if (continuation.isActive) continuation.cancel()
+        }
+    }
 
 private tailrec fun Context.findActivity(): Activity? {
     return when (this) {
