@@ -1,0 +1,661 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Snap → OCR → Speak (EN/NL)</title>
+
+    <!-- OCR in browser -->
+    <script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
+
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; }
+      textarea { width: 100%; min-height: 180px; }
+      button, select { padding: 10px 14px; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+      #status { opacity: .8; margin-top: 8px; }
+      #previewCanvas {
+        max-width: 100%;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        margin-top: 12px;
+        touch-action: none;
+        display: none;
+      }
+      #ocrOverlayCanvas {
+        max-width: 100%;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        margin-top: 12px;
+        display: none;
+      }
+      h2, h3 { margin: 12px 0; }
+      .subtle { opacity: .8; font-size: 14px; margin: 8px 0 12px; }
+      #readView {
+        min-height: 120px;
+        white-space: pre-wrap;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 12px;
+        line-height: 1.5;
+        background: #fafafa;
+      }
+      #readView mark {
+        background: #ffec99;
+        color: inherit;
+        border-radius: 4px;
+        padding: 0 2px;
+      }
+      .small { font-size: 14px; }
+    </style>
+  </head>
+
+  <body>
+    <h2>Snap → OCR → Speak (EN/NL)</h2>
+
+    <div class="row">
+      <input id="file" type="file" accept="image/*" capture="environment" />
+
+      <select id="langSelect" title="OCR + Speech language">
+        <option value="eng">English</option>
+        <option value="nld">Dutch</option>
+      </select>
+
+      <button id="ocrBtn">OCR</button>
+      <button id="speakBtn">Speak</button>
+      <button id="stopBtn">Stop</button>
+
+      <select id="voiceSelect" title="Voice (optional override)"></select>
+    </div>
+
+    <div class="row small">
+      <label>Preprocess:
+        <select id="preprocessSelect" title="Image preprocessing before OCR">
+          <option value="auto">Auto (recommended)</option>
+          <option value="none">None</option>
+          <option value="bw">High-contrast B/W</option>
+        </select>
+      </label>
+      <label><input id="robustToggle" type="checkbox" checked /> Robust OCR (2-pass, slower)</label>
+      <label>OCR mode:
+        <select id="psmSelect" title="OCR page segmentation mode">
+          <option value="6">Single text block (best default)</option>
+          <option value="3">Automatic page layout</option>
+          <option value="11">Sparse text (labels/signs)</option>
+        </select>
+      </label>
+    </div>
+    <div class="row small">
+      <label><input id="cropToggle" type="checkbox" /> Crop before OCR (drag on preview)</label>
+      <button id="clearCropBtn" type="button">Clear crop</button>
+    </div>
+    <p class="subtle">Tip: fill the frame with text, keep camera parallel to paper, and use bright even light.</p>
+
+    <p id="status"></p>
+
+    <canvas id="previewCanvas"></canvas>
+
+    <h3>Extracted text</h3>
+    <textarea id="text" placeholder="OCR result will appear here..."></textarea>
+    <h3>Read-along highlight</h3>
+    <div id="readView">Text preview will appear here...</div>
+    <h3>Detected text boxes (OCR)</h3>
+    <canvas id="ocrOverlayCanvas"></canvas>
+
+    <script>
+      const fileInput = document.getElementById("file");
+      const previewCanvas = document.getElementById("previewCanvas");
+      const statusEl = document.getElementById("status");
+      const textEl = document.getElementById("text");
+      const readViewEl = document.getElementById("readView");
+      const ocrOverlayCanvas = document.getElementById("ocrOverlayCanvas");
+      const preprocessSelect = document.getElementById("preprocessSelect");
+      const robustToggle = document.getElementById("robustToggle");
+      const psmSelect = document.getElementById("psmSelect");
+      const cropToggle = document.getElementById("cropToggle");
+      const clearCropBtn = document.getElementById("clearCropBtn");
+
+      const langSelect = document.getElementById("langSelect");
+      const voiceSelect = document.getElementById("voiceSelect");
+
+      const ocrBtn = document.getElementById("ocrBtn");
+      const speakBtn = document.getElementById("speakBtn");
+      const stopBtn = document.getElementById("stopBtn");
+
+      let imageForOcr = null;
+      let previewImage = null;
+      let cropRect = null;
+      let dragStart = null;
+      let isDraggingCrop = false;
+
+      function escapeHtml(text) {
+        return text
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function renderReadView(highlightStart = -1, highlightEnd = -1) {
+        const txt = textEl.value;
+        if (!txt) {
+          readViewEl.textContent = "Text preview will appear here...";
+          return;
+        }
+
+        if (highlightStart >= 0 && highlightEnd > highlightStart && highlightEnd <= txt.length) {
+          const before = escapeHtml(txt.slice(0, highlightStart));
+          const active = escapeHtml(txt.slice(highlightStart, highlightEnd));
+          const after = escapeHtml(txt.slice(highlightEnd));
+          readViewEl.innerHTML = `${before}<mark>${active}</mark>${after}`;
+          return;
+        }
+
+        readViewEl.textContent = txt;
+      }
+
+      function findWordBounds(text, charIndex) {
+        if (charIndex < 0 || charIndex >= text.length) return null;
+
+        let start = charIndex;
+        while (start < text.length && /\s/.test(text[start])) start++;
+        if (start >= text.length) return null;
+
+        while (start > 0 && !/\s/.test(text[start - 1])) start--;
+
+        let end = start;
+        while (end < text.length && !/\s/.test(text[end])) end++;
+
+        return { start, end };
+      }
+
+      async function loadImageFromSource(source) {
+        if (source instanceof HTMLCanvasElement || source instanceof HTMLImageElement) return source;
+        if (!(source instanceof Blob)) throw new Error("Unsupported image source");
+
+        const src = URL.createObjectURL(source);
+        try {
+          const img = await new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve(image);
+            image.onerror = reject;
+            image.src = src;
+          });
+          return img;
+        } finally {
+          URL.revokeObjectURL(src);
+        }
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function normalizeRect(rect) {
+        if (!rect) return null;
+        const x = Math.min(rect.x, rect.x + rect.w);
+        const y = Math.min(rect.y, rect.y + rect.h);
+        const w = Math.abs(rect.w);
+        const h = Math.abs(rect.h);
+        return { x, y, w, h };
+      }
+
+      function hasUsableCrop() {
+        if (!cropRect) return false;
+        const rect = normalizeRect(cropRect);
+        return rect.w >= 20 && rect.h >= 20;
+      }
+
+      function renderPreviewCanvas() {
+        if (!previewImage) {
+          previewCanvas.style.display = "none";
+          return;
+        }
+
+        const maxWidth = Math.min(window.innerWidth - 40, 860);
+        const scale = Math.min(1, maxWidth / previewImage.width);
+        previewCanvas.width = Math.max(1, Math.round(previewImage.width * scale));
+        previewCanvas.height = Math.max(1, Math.round(previewImage.height * scale));
+        previewCanvas.style.display = "block";
+
+        const ctx = previewCanvas.getContext("2d");
+        ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+        ctx.drawImage(previewImage, 0, 0, previewCanvas.width, previewCanvas.height);
+
+        if (cropRect && cropRect.w > 2 && cropRect.h > 2) {
+          const rect = normalizeRect(cropRect);
+          ctx.save();
+          ctx.fillStyle = "rgba(0,0,0,0.35)";
+          ctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+          ctx.clearRect(rect.x, rect.y, rect.w, rect.h);
+          ctx.strokeStyle = "#ffec99";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+          ctx.restore();
+        }
+      }
+
+      function pointerToCanvas(event) {
+        const bounds = previewCanvas.getBoundingClientRect();
+        return {
+          x: clamp(event.clientX - bounds.left, 0, previewCanvas.width),
+          y: clamp(event.clientY - bounds.top, 0, previewCanvas.height)
+        };
+      }
+
+      async function drawOcrOverlay(source, words) {
+        if (!words || !words.length) {
+          ocrOverlayCanvas.style.display = "none";
+          return;
+        }
+
+        const img = await loadImageFromSource(source);
+        const naturalWidth = img.width;
+        const naturalHeight = img.height;
+        const maxWidth = Math.min(window.innerWidth - 40, 860);
+        const scale = Math.min(1, maxWidth / naturalWidth);
+        const width = Math.max(1, Math.round(naturalWidth * scale));
+        const height = Math.max(1, Math.round(naturalHeight * scale));
+
+        ocrOverlayCanvas.width = width;
+        ocrOverlayCanvas.height = height;
+        ocrOverlayCanvas.style.display = "block";
+
+        const ctx = ocrOverlayCanvas.getContext("2d");
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Darken image slightly to make boxes easier to see.
+        ctx.fillStyle = "rgba(0,0,0,0.18)";
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.strokeStyle = "#7CFC00";
+        ctx.lineWidth = 1.5;
+        ctx.fillStyle = "rgba(124,252,0,0.18)";
+
+        const sx = width / naturalWidth;
+        const sy = height / naturalHeight;
+
+        for (const w of words) {
+          const bbox = w && w.bbox;
+          if (!bbox) continue;
+          const x = bbox.x0 * sx;
+          const y = bbox.y0 * sy;
+          const bw = Math.max(1, (bbox.x1 - bbox.x0) * sx);
+          const bh = Math.max(1, (bbox.y1 - bbox.y0) * sy);
+          ctx.fillRect(x, y, bw, bh);
+          ctx.strokeRect(x, y, bw, bh);
+        }
+      }
+
+      function getOtsuThreshold(data) {
+        const histogram = new Array(256).fill(0);
+        for (let i = 0; i < data.length; i += 4) histogram[data[i]]++;
+
+        const total = data.length / 4;
+        let sum = 0;
+        for (let i = 0; i < 256; i++) sum += i * histogram[i];
+
+        let sumB = 0;
+        let wB = 0;
+        let maxVariance = 0;
+        let threshold = 128;
+
+        for (let t = 0; t < 256; t++) {
+          wB += histogram[t];
+          if (wB === 0) continue;
+
+          const wF = total - wB;
+          if (wF === 0) break;
+
+          sumB += t * histogram[t];
+
+          const mB = sumB / wB;
+          const mF = (sum - sumB) / wF;
+          const variance = wB * wF * (mB - mF) * (mB - mF);
+
+          if (variance > maxVariance) {
+            maxVariance = variance;
+            threshold = t;
+          }
+        }
+
+        return threshold;
+      }
+
+      function percentileFromHistogram(hist, total, p) {
+        const target = Math.max(0, Math.min(total - 1, Math.round(total * p)));
+        let acc = 0;
+        for (let i = 0; i < 256; i++) {
+          acc += hist[i];
+          if (acc >= target) return i;
+        }
+        return 255;
+      }
+
+      function chooseBestChannelStats(data) {
+        // Pick channel with strongest spread, useful for colored paper backgrounds.
+        const stats = [
+          { key: "r", idx: 0, sum: 0, sumSq: 0 },
+          { key: "g", idx: 1, sum: 0, sumSq: 0 },
+          { key: "b", idx: 2, sum: 0, sumSq: 0 }
+        ];
+
+        const total = data.length / 4;
+        for (let i = 0; i < data.length; i += 4) {
+          for (const s of stats) {
+            const v = data[i + s.idx];
+            s.sum += v;
+            s.sumSq += v * v;
+          }
+        }
+
+        let best = stats[0];
+        let bestStdDev = -1;
+        for (const s of stats) {
+          const mean = s.sum / total;
+          const variance = Math.max(0, s.sumSq / total - mean * mean);
+          const stdDev = Math.sqrt(variance);
+          if (stdDev > bestStdDev) {
+            bestStdDev = stdDev;
+            best = s;
+          }
+        }
+        return best.idx;
+      }
+
+      async function buildEnhancedImage(source, mode) {
+        const img = await loadImageFromSource(source);
+
+        // Upscale moderately to improve OCR for small text.
+        const maxWidth = 2000;
+        const scale = Math.max(1, Math.min(2, maxWidth / img.width));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const d = imageData.data;
+
+        // Auto mode uses best color channel + percentile stretch for colored pages.
+        const channelIndex = chooseBestChannelStats(d);
+        const hist = new Array(256).fill(0);
+        for (let i = 0; i < d.length; i += 4) hist[d[i + channelIndex]]++;
+        const total = d.length / 4;
+        const pLow = percentileFromHistogram(hist, total, 0.03);
+        const pHigh = Math.max(pLow + 1, percentileFromHistogram(hist, total, 0.97));
+
+        for (let i = 0; i < d.length; i += 4) {
+          const raw = d[i + channelIndex];
+          const stretched = Math.round((raw - pLow) * 255 / (pHigh - pLow));
+          const normalized = Math.max(0, Math.min(255, stretched));
+          d[i] = normalized;
+          d[i + 1] = normalized;
+          d[i + 2] = normalized;
+        }
+
+        if (mode === "bw") {
+          const threshold = getOtsuThreshold(d);
+          for (let i = 0; i < d.length; i += 4) {
+            const bw = d[i] > threshold ? 255 : 0;
+            d[i] = bw;
+            d[i + 1] = bw;
+            d[i + 2] = bw;
+          }
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+        return canvas;
+      }
+
+      fileInput.addEventListener("change", () => {
+        const f = fileInput.files?.[0];
+        if (!f) return;
+
+        imageForOcr = f;
+        cropRect = null;
+
+        loadImageFromSource(f)
+          .then((img) => {
+            previewImage = img;
+            renderPreviewCanvas();
+            statusEl.textContent = `Loaded: ${f.name}`;
+          })
+          .catch(() => {
+            statusEl.textContent = "Could not load image preview.";
+          });
+      });
+
+      previewCanvas.addEventListener("pointerdown", (e) => {
+        if (!cropToggle.checked || !previewImage) return;
+        isDraggingCrop = true;
+        const p = pointerToCanvas(e);
+        dragStart = p;
+        cropRect = { x: p.x, y: p.y, w: 0, h: 0 };
+        previewCanvas.setPointerCapture(e.pointerId);
+        renderPreviewCanvas();
+      });
+
+      previewCanvas.addEventListener("pointermove", (e) => {
+        if (!isDraggingCrop || !dragStart) return;
+        const p = pointerToCanvas(e);
+        cropRect = { x: dragStart.x, y: dragStart.y, w: p.x - dragStart.x, h: p.y - dragStart.y };
+        renderPreviewCanvas();
+      });
+
+      previewCanvas.addEventListener("pointerup", (e) => {
+        if (!isDraggingCrop) return;
+        isDraggingCrop = false;
+        dragStart = null;
+        previewCanvas.releasePointerCapture(e.pointerId);
+        if (!hasUsableCrop()) cropRect = null;
+        renderPreviewCanvas();
+      });
+
+      cropToggle.addEventListener("change", () => {
+        if (!cropToggle.checked) cropRect = null;
+        renderPreviewCanvas();
+      });
+
+      clearCropBtn.addEventListener("click", () => {
+        cropRect = null;
+        renderPreviewCanvas();
+      });
+
+      window.addEventListener("resize", () => {
+        renderPreviewCanvas();
+      });
+
+      textEl.addEventListener("input", () => {
+        renderReadView();
+      });
+
+      function populateVoices() {
+        const voices = speechSynthesis.getVoices() || [];
+        voiceSelect.innerHTML = "";
+
+        // Populate dropdown with all available voices
+        for (const v of voices) {
+          const opt = document.createElement("option");
+          opt.value = v.name;
+          opt.textContent = `${v.name} (${v.lang})`;
+          voiceSelect.appendChild(opt);
+        }
+
+        // Pick a sensible default voice based on language selection
+        setDefaultVoiceForSelectedLanguage();
+      }
+
+      function setDefaultVoiceForSelectedLanguage() {
+        const voices = speechSynthesis.getVoices() || [];
+        const isDutch = langSelect.value === "nld";
+        const preferred = isDutch ? ["nl-NL", "nl"] : ["en-US", "en-GB", "en"];
+
+        const match =
+          preferred.map(code =>
+            voices.find(v => v.lang?.toLowerCase() === code.toLowerCase()) ||
+            voices.find(v => v.lang?.toLowerCase().startsWith(code.toLowerCase()))
+          ).find(Boolean);
+
+        if (match) {
+          // Set dropdown to that voice if it exists in the options
+          for (const opt of voiceSelect.options) {
+            if (opt.value === match.name) {
+              voiceSelect.value = match.name;
+              break;
+            }
+          }
+        }
+      }
+
+      // Voices often load asynchronously
+      populateVoices();
+      speechSynthesis.onvoiceschanged = populateVoices;
+
+      langSelect.addEventListener("change", () => {
+        setDefaultVoiceForSelectedLanguage();
+      });
+
+      async function runOcr() {
+        if (!imageForOcr) {
+          statusEl.textContent = "Pick or capture an image first.";
+          return;
+        }
+
+        const lang = langSelect.value; // "eng" or "nld"
+        statusEl.textContent = `Running OCR (${lang})…`;
+        textEl.value = "";
+
+        let baseSource = imageForOcr;
+        if (cropToggle.checked && hasUsableCrop() && previewImage) {
+          const rect = normalizeRect(cropRect);
+          const scaleX = previewImage.width / previewCanvas.width;
+          const scaleY = previewImage.height / previewCanvas.height;
+          const sx = Math.max(0, Math.round(rect.x * scaleX));
+          const sy = Math.max(0, Math.round(rect.y * scaleY));
+          const sw = Math.min(previewImage.width - sx, Math.max(1, Math.round(rect.w * scaleX)));
+          const sh = Math.min(previewImage.height - sy, Math.max(1, Math.round(rect.h * scaleY)));
+          const croppedCanvas = document.createElement("canvas");
+          croppedCanvas.width = sw;
+          croppedCanvas.height = sh;
+          const croppedCtx = croppedCanvas.getContext("2d");
+          croppedCtx.drawImage(previewImage, sx, sy, sw, sh, 0, 0, sw, sh);
+          baseSource = croppedCanvas;
+        }
+
+        const preprocessMode = preprocessSelect.value;
+        const options = {
+          tessedit_pageseg_mode: psmSelect.value,
+          preserve_interword_spaces: "1",
+          user_defined_dpi: "300",
+          tessedit_char_whitelist: lang === "eng"
+            ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,;:!?()[]{}'\"-_/+@#$%&* "
+            : undefined
+        };
+
+        const candidates = [];
+        candidates.push({ label: "original", source: baseSource });
+        if (preprocessMode !== "none") {
+          candidates.push({
+            label: preprocessMode === "bw" ? "preprocessed-bw" : "preprocessed-auto",
+            source: await buildEnhancedImage(baseSource, preprocessMode)
+          });
+        }
+
+        const selectedCandidates = robustToggle.checked
+          ? candidates
+          : [candidates[candidates.length - 1]];
+
+        let bestData = null;
+        let bestLabel = "";
+        let bestSource = null;
+        for (let i = 0; i < selectedCandidates.length; i++) {
+          const candidate = selectedCandidates[i];
+          statusEl.textContent = `Running OCR (${lang}) [${candidate.label}] ${i + 1}/${selectedCandidates.length}…`;
+          const { data } = await Tesseract.recognize(candidate.source, lang, {
+            ...options,
+            logger: (m) => {
+              if (m.status) {
+                statusEl.textContent = `Running OCR (${lang}) [${candidate.label}] ${i + 1}/${selectedCandidates.length}: ${m.status} ${Math.round((m.progress || 0) * 100)}%`;
+              }
+            }
+          });
+
+          if (!bestData || (data.confidence || 0) > (bestData.confidence || 0)) {
+            bestData = data;
+            bestLabel = candidate.label;
+            bestSource = candidate.source;
+          }
+        }
+
+        textEl.value = ((bestData && bestData.text) || "").trim();
+        renderReadView();
+        await drawOcrOverlay(bestSource || baseSource, (bestData && bestData.words) || []);
+        const confidence = bestData && typeof bestData.confidence === "number"
+          ? ` Confidence: ${Math.round(bestData.confidence)}%.`
+          : "";
+        statusEl.textContent = `Done (${bestLabel || "unknown"}).${confidence}`;
+      }
+
+      function speak() {
+        const rawText = textEl.value;
+        if (!rawText.trim()) {
+          statusEl.textContent = "No text to read yet.";
+          return;
+        }
+
+        // Stop anything already speaking
+        speechSynthesis.cancel();
+
+        const u = new SpeechSynthesisUtterance(rawText);
+
+        // Set speech language based on selection (helps pronunciation)
+        const targetLang = langSelect.value === "nld" ? "nl-NL" : "en-US";
+        u.lang = targetLang;
+
+        // Optional: choose voice from dropdown if available
+        const voices = speechSynthesis.getVoices() || [];
+        const chosen = voices.find(v => v.name === voiceSelect.value);
+        if (chosen) u.voice = chosen;
+
+        u.onstart = () => {
+          statusEl.textContent = "Speaking…";
+          renderReadView();
+        };
+        u.onboundary = (e) => {
+          if (typeof e.charIndex !== "number") return;
+          const bounds = findWordBounds(rawText, e.charIndex);
+          if (!bounds) return;
+          renderReadView(bounds.start, bounds.end);
+        };
+        u.onend = () => {
+          renderReadView();
+          statusEl.textContent = "Finished.";
+        };
+        u.onerror = (e) => {
+          renderReadView();
+          statusEl.textContent = `Speech error: ${e.error || "unknown"}`;
+        };
+
+        speechSynthesis.speak(u);
+      }
+
+      ocrBtn.addEventListener("click", runOcr);
+      speakBtn.addEventListener("click", speak);
+
+      stopBtn.addEventListener("click", () => {
+        speechSynthesis.cancel();
+        renderReadView();
+        statusEl.textContent = "Stopped.";
+      });
+
+      renderReadView();
+    </script>
+  </body>
+</html>

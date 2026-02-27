@@ -1,0 +1,9 @@
+{
+  "name": "text-power",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Snap -> OCR -> Speak local static server",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
