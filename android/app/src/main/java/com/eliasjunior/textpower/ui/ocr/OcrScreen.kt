@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -43,6 +44,8 @@ data class OcrUiState(
     val previewBitmap: ImageBitmap? = null,
     val extractedText: String = "",
     val isProcessing: Boolean = false,
+    val processingStatus: String? = null,
+    val processingProgress: Float? = null,
     val preprocessEnabled: Boolean = true,
     val filterByBlocks: Boolean = true,
     val multiPageScanEnabled: Boolean = false
@@ -54,6 +57,8 @@ fun OcrScreen(
     onPickImage: () -> Unit,
     onScanDocument: () -> Unit,
     onRecognize: () -> Unit,
+    onCopyText: () -> Unit,
+    onShareText: () -> Unit,
     onSetPreprocessEnabled: (Boolean) -> Unit,
     onSetFilterByBlocks: (Boolean) -> Unit,
     onSetMultiPageScanEnabled: (Boolean) -> Unit
@@ -114,11 +119,27 @@ fun OcrScreen(
         if (state.isProcessing) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                Text("Running ML Kit OCR…")
+                Text(state.processingStatus ?: "Running ML Kit OCR…")
+            }
+            state.processingProgress?.let { progress ->
+                LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
 
         Text(text = "Readable Mode", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onCopyText,
+                enabled = state.extractedText.isNotBlank()
+            ) { Text("Copy") }
+            Button(
+                onClick = onShareText,
+                enabled = state.extractedText.isNotBlank()
+            ) { Text("Share") }
+        }
         Text(
             text = "Font size",
             style = MaterialTheme.typography.labelMedium,

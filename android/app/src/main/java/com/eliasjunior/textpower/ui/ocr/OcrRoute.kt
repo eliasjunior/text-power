@@ -1,8 +1,11 @@
 package com.eliasjunior.textpower.ui.ocr
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
@@ -49,6 +52,8 @@ fun OcrRoute() {
     var loadedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var extractedText by remember { mutableStateOf("") }
     var isProcessing by remember { mutableStateOf(false) }
+    var processingStatus by remember { mutableStateOf<String?>(null) }
+    var processingProgress by remember { mutableStateOf<Float?>(null) }
     var preprocessEnabled by remember { mutableStateOf(true) }
     var filterByBlocks by remember { mutableStateOf(true) }
     var multiPageScanEnabled by remember { mutableStateOf(false) }
@@ -68,6 +73,8 @@ fun OcrRoute() {
     ) { uri ->
         imageUri = uri
         extractedText = ""
+        processingStatus = null
+        processingProgress = null
     }
 
     val scannerLauncher = rememberLauncherForActivityResult(
@@ -83,19 +90,27 @@ fun OcrRoute() {
         if (scannedUris.isNotEmpty()) {
             scope.launch {
                 isProcessing = true
+                processingStatus = "Preparing OCR…"
+                processingProgress = 0f
                 val outputPages = mutableListOf<String>()
                 try {
                     for ((index, uri) in scannedUris.withIndex()) {
+                        val current = index + 1
+                        val total = scannedUris.size
+                        processingStatus = "Processing page $current/$total…"
+                        processingProgress = index.toFloat() / total.toFloat()
+
                         val bitmap = withContext(Dispatchers.IO) { bitmapLoader.load(uri) }
                         val prepared = withContext(Dispatchers.Default) {
                             ocrImageProcessor.preprocessIfRequested(bitmap, preprocessEnabled)
                         }
                         val resultText = ocrProcessor.process(prepared).awaitResult()
                         val pageText = ocrTextFormatter.format(resultText, filterByBlocks)
+                        processingProgress = current.toFloat() / total.toFloat()
                         if (pageText.isNotBlank()) {
                             val header = if (multiPageScanEnabled || scannedUris.size > 1) {
                                 "Page ${index + 1}\n\n"
-                            } else {
+                                } else {
                                 ""
                             }
                             outputPages.add(header + pageText)
@@ -110,6 +125,8 @@ fun OcrRoute() {
                         Toast.LENGTH_LONG
                     ).show()
                 } finally {
+                    processingStatus = null
+                    processingProgress = null
                     isProcessing = false
                 }
             }
@@ -131,6 +148,8 @@ fun OcrRoute() {
             previewBitmap = loadedBitmap?.asImageBitmap(),
             extractedText = extractedText,
             isProcessing = isProcessing,
+            processingStatus = processingStatus,
+            processingProgress = processingProgress,
             preprocessEnabled = preprocessEnabled,
             filterByBlocks = filterByBlocks,
             multiPageScanEnabled = multiPageScanEnabled
@@ -161,6 +180,8 @@ fun OcrRoute() {
             val sourceBitmap = loadedBitmap
             if (sourceBitmap != null) {
                 isProcessing = true
+                processingStatus = "Processing page 1/1…"
+                processingProgress = 0f
 
                 scope.launch {
                     try {
@@ -174,13 +195,32 @@ fun OcrRoute() {
                         Toast.makeText(
                             context,
                             "OCR failed: ${err.localizedMessage ?: "unknown error"}",
-                            Toast.LENGTH_LONG
-                        ).show()
+                                Toast.LENGTH_LONG
+                            ).show()
                     } finally {
+                        processingStatus = null
+                        processingProgress = null
                         isProcessing = false
                     }
                 }
             }
+        },
+        onCopyText = {
+            val text = extractedText.trim()
+            if (text.isBlank()) return@OcrScreen
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("OCR Text", text))
+            Toast.makeText(context, "Text copied.", Toast.LENGTH_SHORT).show()
+        },
+        onShareText = {
+            val text = extractedText.trim()
+            if (text.isBlank()) return@OcrScreen
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            val chooser = Intent.createChooser(shareIntent, "Share OCR text")
+            context.startActivity(chooser)
         },
         onSetPreprocessEnabled = { preprocessEnabled = it },
         onSetFilterByBlocks = { filterByBlocks = it },
