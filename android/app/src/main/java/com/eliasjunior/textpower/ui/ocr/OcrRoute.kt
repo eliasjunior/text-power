@@ -256,6 +256,24 @@ fun OcrRoute() {
                 }
             }
         },
+        onDeleteSession = { session ->
+            scope.launch(Dispatchers.IO) {
+                val updated = sessionStore.deleteSession(session.id)
+                withContext(Dispatchers.Main) {
+                    sessions = updated
+                    Toast.makeText(context, "Session deleted.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        },
+        onClearHistory = {
+            scope.launch(Dispatchers.IO) {
+                val updated = sessionStore.clearAllSessions()
+                withContext(Dispatchers.Main) {
+                    sessions = updated
+                    Toast.makeText(context, "History cleared.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        },
         onSetPreprocessEnabled = { preprocessEnabled = it },
         onSetFilterByBlocks = { filterByBlocks = it },
         onSetMultiPageScanEnabled = { multiPageScanEnabled = it }

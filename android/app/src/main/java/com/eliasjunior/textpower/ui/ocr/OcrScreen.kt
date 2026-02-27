@@ -27,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,6 +70,8 @@ fun OcrScreen(
     onShareText: () -> Unit,
     onSaveSession: () -> Unit,
     onOpenSession: (OcrSession) -> Unit,
+    onDeleteSession: (OcrSession) -> Unit,
+    onClearHistory: () -> Unit,
     onSetPreprocessEnabled: (Boolean) -> Unit,
     onSetFilterByBlocks: (Boolean) -> Unit,
     onSetMultiPageScanEnabled: (Boolean) -> Unit
@@ -191,16 +194,26 @@ fun OcrScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
-            Text(
-                text = "Recent sessions (tap to open)",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Recent sessions (tap to open)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(onClick = onClearHistory) {
+                    Text("Clear all")
+                }
+            }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (session in state.sessions.take(12)) {
                     SessionRow(
                         session = session,
-                        onClick = { onOpenSession(session) }
+                        onClick = { onOpenSession(session) },
+                        onDelete = { onDeleteSession(session) }
                     )
                 }
             }
@@ -211,7 +224,8 @@ fun OcrScreen(
 @Composable
 private fun SessionRow(
     session: OcrSession,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: () -> Unit
 ) {
     val dateText = remember(session.timestampMs) {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
@@ -261,6 +275,12 @@ private fun SessionRow(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary
             )
+            TextButton(
+                onClick = onDelete,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("Delete")
+            }
         }
     }
 }

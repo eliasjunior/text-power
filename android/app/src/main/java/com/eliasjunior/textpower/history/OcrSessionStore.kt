@@ -71,6 +71,26 @@ class OcrSessionStore(private val context: Context) {
         return BitmapFactory.decodeFile(imageFile.absolutePath)
     }
 
+    fun deleteSession(sessionId: String): List<OcrSession> {
+        val current = loadSessions()
+        val target = current.find { it.id == sessionId }
+        if (target != null) {
+            File(imagesDir, target.imageFileName).delete()
+        }
+        val updated = current.filterNot { it.id == sessionId }
+        persistSessions(updated)
+        return updated
+    }
+
+    fun clearAllSessions(): List<OcrSession> {
+        val current = loadSessions()
+        for (session in current) {
+            File(imagesDir, session.imageFileName).delete()
+        }
+        persistSessions(emptyList())
+        return emptyList()
+    }
+
     private fun persistSessions(sessions: List<OcrSession>) {
         val array = JSONArray()
         for (session in sessions) {
