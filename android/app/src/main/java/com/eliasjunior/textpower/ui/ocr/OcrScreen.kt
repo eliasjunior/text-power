@@ -43,6 +43,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -65,6 +67,7 @@ data class OcrUiState(
     val pitch: Float = 1.0f,
     val selectedVoiceName: String? = null,
     val voiceOptions: List<SelectionOption> = emptyList(),
+    val highlightedRange: IntRange? = null,
     val preprocessEnabled: Boolean = true,
     val filterByBlocks: Boolean = true,
     val cleaningLevel: CleaningLevel = CleaningLevel.NORMAL,
@@ -254,8 +257,28 @@ fun OcrScreen(
                 valueRange = 16f..30f
             )
         }
+        val readerText = remember(state.extractedText, state.highlightedRange) {
+            val content = if (state.extractedText.isBlank()) "No text recognized yet." else state.extractedText
+            val range = state.highlightedRange
+            if (range == null || state.extractedText.isBlank()) {
+                buildAnnotatedString { append(content) }
+            } else {
+                val safeStart = range.first.coerceIn(0, content.length)
+                val safeEnd = (range.last + 1).coerceIn(safeStart, content.length)
+                buildAnnotatedString {
+                    append(content)
+                    if (safeEnd > safeStart) {
+                        addStyle(
+                            style = SpanStyle(background = Color(0xFFD8D8D8)),
+                            start = safeStart,
+                            end = safeEnd
+                        )
+                    }
+                }
+            }
+        }
         Text(
-            text = if (state.extractedText.isBlank()) "No text recognized yet." else state.extractedText,
+            text = readerText,
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))

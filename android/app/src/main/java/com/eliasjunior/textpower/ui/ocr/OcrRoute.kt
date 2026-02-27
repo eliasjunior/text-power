@@ -72,6 +72,7 @@ fun OcrRoute() {
     var pitch by remember { mutableStateOf(1.0f) }
     var selectedVoiceName by remember { mutableStateOf<String?>(null) }
     var voiceOptions by remember { mutableStateOf<List<SelectionOption>>(emptyList()) }
+    var highlightedRange by remember { mutableStateOf<IntRange?>(null) }
     var preprocessEnabled by remember { mutableStateOf(true) }
     var filterByBlocks by remember { mutableStateOf(true) }
     var cleaningLevel by remember { mutableStateOf(CleaningLevel.NORMAL) }
@@ -88,7 +89,14 @@ fun OcrRoute() {
     val scanner = remember(scannerOptions) { GmsDocumentScanning.getClient(scannerOptions) }
 
     DisposableEffect(textSpeaker) {
+        textSpeaker.setProgressListener(object : TextSpeaker.ProgressListener {
+            override fun onRangeSpoken(start: Int, endExclusive: Int) {
+                if (endExclusive <= start) return
+                highlightedRange = start until endExclusive
+            }
+        })
         onDispose {
+            textSpeaker.setProgressListener(null)
             textSpeaker.shutdown()
         }
     }
@@ -98,10 +106,11 @@ fun OcrRoute() {
     ) { uri ->
         imageUri = uri
         extractedText = ""
-            processingStatus = null
-            processingProgress = null
-            playbackStatus = null
-        }
+        highlightedRange = null
+        processingStatus = null
+        processingProgress = null
+        playbackStatus = null
+    }
 
     val scannerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
@@ -112,6 +121,7 @@ fun OcrRoute() {
         val scannedUris = scanResult?.pages?.map { it.imageUri }?.filterNotNull().orEmpty()
         imageUri = scannedUris.firstOrNull()
         extractedText = ""
+        highlightedRange = null
         playbackStatus = null
 
         if (scannedUris.isNotEmpty()) {
@@ -144,8 +154,10 @@ fun OcrRoute() {
                         }
                     }
                     extractedText = outputPages.joinToString("\n\n")
+                    highlightedRange = null
                 } catch (err: Exception) {
                     extractedText = ""
+                    highlightedRange = null
                     Toast.makeText(
                         context,
                         "OCR failed: ${err.localizedMessage ?: "unknown error"}",
@@ -210,6 +222,7 @@ fun OcrRoute() {
             pitch = pitch,
             selectedVoiceName = selectedVoiceName,
             voiceOptions = voiceOptions,
+            highlightedRange = highlightedRange,
             preprocessEnabled = preprocessEnabled,
             filterByBlocks = filterByBlocks,
             cleaningLevel = cleaningLevel,
@@ -251,14 +264,16 @@ fun OcrRoute() {
                         }
                         val resultText = ocrProcessor.process(prepared).awaitResult()
                         extractedText = ocrTextFormatter.format(resultText, filterByBlocks, cleaningLevel)
+                        highlightedRange = null
                         playbackStatus = null
                     } catch (err: Exception) {
                         extractedText = ""
+                        highlightedRange = null
                         Toast.makeText(
                             context,
                             "OCR failed: ${err.localizedMessage ?: "unknown error"}",
-                                Toast.LENGTH_LONG
-                            ).show()
+                            Toast.LENGTH_LONG
+                        ).show()
                     } finally {
                         processingStatus = null
                         processingProgress = null
@@ -268,6 +283,7 @@ fun OcrRoute() {
             }
         },
         onPlayText = {
+            highlightedRange = null
             textSpeaker.setSpeechRate(speechRate)
             textSpeaker.setPitch(pitch)
             textSpeaker.setVoice(selectedVoiceName)
@@ -289,6 +305,7 @@ fun OcrRoute() {
         },
         onStopText = {
             val result = textSpeaker.stop()
+            highlightedRange = null
             playbackStatus = result.message ?: when (result.state) {
                 TextSpeaker.SpeakerState.STOPPED -> "Stopped."
                 TextSpeaker.SpeakerState.ERROR -> "Stop failed."
@@ -335,6 +352,7 @@ fun OcrRoute() {
                     imageUri = null
                     loadedBitmap = bitmap
                     extractedText = session.extractedText
+                    highlightedRange = null
                 }
             }
         },

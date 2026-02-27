@@ -1,10 +1,13 @@
 package com.eliasjunior.textpower.tts
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import java.util.Locale
 
 interface TextSpeaker {
+    fun setProgressListener(listener: ProgressListener?)
     fun start(text: String): SpeakerResult
     fun pause(): SpeakerResult
     fun stop(): SpeakerResult
@@ -37,6 +40,10 @@ interface TextSpeaker {
         val languageTag: String,
         val displayLabel: String
     )
+
+    interface ProgressListener {
+        fun onRangeSpoken(start: Int, endExclusive: Int)
+    }
 }
 
 class AndroidTextSpeaker(
@@ -51,6 +58,9 @@ class AndroidTextSpeaker(
     private var engine: TextToSpeech? = null
     private var state: TextSpeaker.SpeakerState = TextSpeaker.SpeakerState.UNINITIALIZED
     private var pendingText: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var progressListener: TextSpeaker.ProgressListener? = null
+    private val utteranceChunks = mutableMapOf<String, SpeechChunk>()
 
     private var speechRate: Float = 1.0f
     private var pitch: Float = 1.0f
@@ -75,8 +85,13 @@ class AndroidTextSpeaker(
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    state = TextSpeaker.SpeakerState.STOPPED
-                    pendingText = null
+                    if (!utteranceId.isNullOrBlank()) {
+                        utteranceChunks.remove(utteranceId)
+                    }
+                    if (utteranceChunks.isEmpty()) {
+                        state = TextSpeaker.SpeakerState.STOPPED
+                        pendingText = null
+                    }
                 }
 
                 @Deprecated("Deprecated in Java")
@@ -87,6 +102,24 @@ class AndroidTextSpeaker(
                 override fun onError(utteranceId: String?, errorCode: Int) {
                     state = TextSpeaker.SpeakerState.ERROR
                 }
+
+                override fun onRangeStart(
+                    utteranceId: String?,
+                    start: Int,
+                    end: Int,
+                    frame: Int
+                ) {
+                    val id = utteranceId ?: return
+                    val chunk = utteranceChunks[id] ?: return
+                    val safeStart = start.coerceIn(0, chunk.text.length)
+                    val safeEnd = end.coerceIn(safeStart, chunk.text.length)
+                    if (safeEnd <= safeStart) return
+                    val absoluteStart = chunk.start + safeStart
+                    val absoluteEnd = chunk.start + safeEnd
+                    mainHandler.post {
+                        progressListener?.onRangeSpoken(absoluteStart, absoluteEnd)
+                    }
+                }
             })
 
             applySpeakerSettings(tts)
@@ -95,8 +128,7 @@ class AndroidTextSpeaker(
     }
 
     override fun start(text: String): TextSpeaker.SpeakerResult {
-        val clean = text.trim()
-        if (clean.isEmpty()) {
+        if (text.isBlank()) {
             return TextSpeaker.SpeakerResult(
                 success = false,
                 state = state,
@@ -120,27 +152,30 @@ class AndroidTextSpeaker(
 
         applySpeakerSettings(tts)
 
-        val chunks = chunkText(clean)
+        val chunks = chunkText(text)
         if (chunks.isEmpty()) {
             return TextSpeaker.SpeakerResult(false, state, "No text to speak.")
         }
 
+        utteranceChunks.clear()
         var code = tts.speak("", TextToSpeech.QUEUE_FLUSH, null, "ocr_flush_${System.currentTimeMillis()}")
         if (code != TextToSpeech.SUCCESS) {
             state = TextSpeaker.SpeakerState.ERROR
             return TextSpeaker.SpeakerResult(false, state, "Failed to start speech.")
         }
 
+        val playId = System.currentTimeMillis()
         for ((index, chunk) in chunks.withIndex()) {
-            val utteranceId = "ocr_${System.currentTimeMillis()}_$index"
-            code = tts.speak(chunk, TextToSpeech.QUEUE_ADD, null, utteranceId)
+            val utteranceId = "ocr_${playId}_$index"
+            utteranceChunks[utteranceId] = chunk
+            code = tts.speak(chunk.text, TextToSpeech.QUEUE_ADD, null, utteranceId)
             if (code != TextToSpeech.SUCCESS) {
                 state = TextSpeaker.SpeakerState.ERROR
                 return TextSpeaker.SpeakerResult(false, state, "Failed while queueing speech.")
             }
         }
 
-        pendingText = clean
+        pendingText = text
         state = TextSpeaker.SpeakerState.SPEAKING
         return TextSpeaker.SpeakerResult(true, state)
     }
@@ -153,6 +188,7 @@ class AndroidTextSpeaker(
         }
 
         tts.stop()
+        utteranceChunks.clear()
         state = TextSpeaker.SpeakerState.PAUSED
         return TextSpeaker.SpeakerResult(true, state)
     }
@@ -165,9 +201,14 @@ class AndroidTextSpeaker(
         }
 
         tts.stop()
+        utteranceChunks.clear()
         pendingText = null
         state = TextSpeaker.SpeakerState.STOPPED
         return TextSpeaker.SpeakerResult(true, state)
+    }
+
+    override fun setProgressListener(listener: TextSpeaker.ProgressListener?) {
+        progressListener = listener
     }
 
     override fun setSpeechRate(rate: Float): TextSpeaker.SpeakerResult {
@@ -240,6 +281,8 @@ class AndroidTextSpeaker(
         engine?.stop()
         engine?.shutdown()
         engine = null
+        utteranceChunks.clear()
+        progressListener = null
         state = TextSpeaker.SpeakerState.STOPPED
     }
 
@@ -252,35 +295,46 @@ class AndroidTextSpeaker(
         }
     }
 
-    private fun chunkText(text: String): List<String> {
-        if (text.length <= MAX_CHUNK_CHARS) return listOf(text)
+    private fun chunkText(text: String): List<SpeechChunk> {
+        if (text.length <= MAX_CHUNK_CHARS) return listOf(SpeechChunk(text = text, start = 0, endExclusive = text.length))
 
-        val chunks = mutableListOf<String>()
-        val paragraphParts = text.split(Regex("\\n\\s*\\n")).filter { it.isNotBlank() }
-
-        for (part in paragraphParts) {
-            val normalized = part.replace(Regex("\\s+"), " ").trim()
-            if (normalized.isEmpty()) continue
-
-            if (normalized.length <= MAX_CHUNK_CHARS) {
-                chunks.add(normalized)
-                continue
-            }
-
-            val sentences = normalized.split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }
-            var current = StringBuilder()
-            for (sentence in sentences) {
-                val extra = if (current.isEmpty()) sentence else " $sentence"
-                if (current.length + extra.length <= MAX_CHUNK_CHARS) {
-                    current.append(extra)
-                } else {
-                    if (current.isNotEmpty()) chunks.add(current.toString().trim())
-                    current = StringBuilder(sentence)
+        val chunks = mutableListOf<SpeechChunk>()
+        var cursor = 0
+        while (cursor < text.length) {
+            var end = (cursor + MAX_CHUNK_CHARS).coerceAtMost(text.length)
+            if (end < text.length) {
+                val breakAt = text.lastIndexOfAny(charArrayOf(' ', '\n', '\t'), end - 1)
+                if (breakAt >= cursor + 200) {
+                    end = breakAt + 1
                 }
             }
-            if (current.isNotEmpty()) chunks.add(current.toString().trim())
+
+            val rawChunk = text.substring(cursor, end)
+            val localStart = rawChunk.indexOfFirst { !it.isWhitespace() }
+            if (localStart >= 0) {
+                val localEndInclusive = rawChunk.indexOfLast { !it.isWhitespace() }
+                val absStart = cursor + localStart
+                val absEnd = cursor + localEndInclusive + 1
+                if (absEnd > absStart) {
+                    chunks.add(
+                        SpeechChunk(
+                            text = text.substring(absStart, absEnd),
+                            start = absStart,
+                            endExclusive = absEnd
+                        )
+                    )
+                }
+            }
+
+            cursor = end
         }
 
-        return chunks.filter { it.isNotBlank() }
+        return chunks
     }
 }
+
+private data class SpeechChunk(
+    val text: String,
+    val start: Int,
+    val endExclusive: Int
+)
