@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -94,10 +96,14 @@ fun OcrScreen(
 ) {
     var readerFontSize by remember { mutableStateOf(22f) }
     val readerScroll = rememberScrollState()
+    var showAdvanced by remember { mutableStateOf(false) }
+    var showVoiceSettings by remember { mutableStateOf(false) }
+    var showTextSessionSettings by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -123,22 +129,29 @@ fun OcrScreen(
             ) { Text("Recognize Text") }
         }
 
-        OcrSwitchRow(
-            label = "Preprocess (grayscale + adaptive threshold)",
-            checked = state.preprocessEnabled,
-            onCheckedChange = onSetPreprocessEnabled
+        AssistChip(
+            onClick = { showAdvanced = !showAdvanced },
+            label = { Text(if (showAdvanced) "Hide advanced OCR settings" else "Show advanced OCR settings") }
         )
 
-        OcrSwitchRow(
-            label = "Filter using ML Kit blocks/lines",
-            checked = state.filterByBlocks,
-            onCheckedChange = onSetFilterByBlocks
-        )
+        if (showAdvanced) {
+            OcrSwitchRow(
+                label = "Preprocess (grayscale + adaptive threshold)",
+                checked = state.preprocessEnabled,
+                onCheckedChange = onSetPreprocessEnabled
+            )
 
-        CleaningLevelSelector(
-            selected = state.cleaningLevel,
-            onSelect = onSetCleaningLevel
-        )
+            OcrSwitchRow(
+                label = "Filter using ML Kit blocks/lines",
+                checked = state.filterByBlocks,
+                onCheckedChange = onSetFilterByBlocks
+            )
+
+            CleaningLevelSelector(
+                selected = state.cleaningLevel,
+                onSelect = onSetCleaningLevel
+            )
+        }
 
         OcrSwitchRow(
             label = "Multi-page scan mode",
@@ -185,55 +198,62 @@ fun OcrScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Text(
-            text = "Voice settings",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        AssistChip(
+            onClick = { showVoiceSettings = !showVoiceSettings },
+            label = { Text(if (showVoiceSettings) "Hide voice settings" else "Show voice settings") }
         )
-        Text(text = "Rate: ${"%.2f".format(state.speechRate)}", style = MaterialTheme.typography.labelSmall)
-        Slider(
-            value = state.speechRate,
-            onValueChange = onSetSpeechRate,
-            valueRange = 0.5f..1.8f
-        )
-        Text(text = "Pitch: ${"%.2f".format(state.pitch)}", style = MaterialTheme.typography.labelSmall)
-        Slider(
-            value = state.pitch,
-            onValueChange = onSetPitch,
-            valueRange = 0.5f..1.8f
-        )
-        SelectionMenu(
-            label = "Voice",
-            selected = state.selectedVoiceName ?: "default",
-            options = listOf(SelectionOption("default", "Default")) + state.voiceOptions,
-            onSelect = { selectedId ->
-                onSetVoiceName(if (selectedId == "default") null else selectedId)
-            }
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = onCopyText,
-                enabled = state.extractedText.isNotBlank()
-            ) { Text("Copy") }
-            Button(
-                onClick = onShareText,
-                enabled = state.extractedText.isNotBlank()
-            ) { Text("Share") }
-            Button(
-                onClick = onSaveSession,
-                enabled = state.extractedText.isNotBlank() && state.previewBitmap != null
-            ) { Text("Save Session") }
+        if (showVoiceSettings) {
+            Text(text = "Rate: ${"%.2f".format(state.speechRate)}", style = MaterialTheme.typography.labelSmall)
+            Slider(
+                value = state.speechRate,
+                onValueChange = onSetSpeechRate,
+                valueRange = 0.5f..1.8f
+            )
+            Text(text = "Pitch: ${"%.2f".format(state.pitch)}", style = MaterialTheme.typography.labelSmall)
+            Slider(
+                value = state.pitch,
+                onValueChange = onSetPitch,
+                valueRange = 0.5f..1.8f
+            )
+            SelectionMenu(
+                label = "Voice",
+                selected = state.selectedVoiceName ?: "default",
+                options = listOf(SelectionOption("default", "Default")) + state.voiceOptions,
+                onSelect = { selectedId ->
+                    onSetVoiceName(if (selectedId == "default") null else selectedId)
+                }
+            )
         }
-        Text(
-            text = "Font size",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        AssistChip(
+            onClick = { showTextSessionSettings = !showTextSessionSettings },
+            label = { Text(if (showTextSessionSettings) "Hide text session settings" else "Show text session settings") }
         )
-        Slider(
-            value = readerFontSize,
-            onValueChange = { readerFontSize = it },
-            valueRange = 16f..30f
-        )
+        if (showTextSessionSettings) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onCopyText,
+                    enabled = state.extractedText.isNotBlank()
+                ) { Text("Copy") }
+                Button(
+                    onClick = onShareText,
+                    enabled = state.extractedText.isNotBlank()
+                ) { Text("Share") }
+                Button(
+                    onClick = onSaveSession,
+                    enabled = state.extractedText.isNotBlank() && state.previewBitmap != null
+                ) { Text("Save Session") }
+            }
+            Text(
+                text = "Font size",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Slider(
+                value = readerFontSize,
+                onValueChange = { readerFontSize = it },
+                valueRange = 16f..30f
+            )
+        }
         Text(
             text = if (state.extractedText.isBlank()) "No text recognized yet." else state.extractedText,
             modifier = Modifier
