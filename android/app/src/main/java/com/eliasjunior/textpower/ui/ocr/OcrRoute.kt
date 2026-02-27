@@ -22,6 +22,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import com.eliasjunior.textpower.history.OcrSession
+import com.eliasjunior.textpower.history.OcrSessionStore
 import com.eliasjunior.textpower.ocr.BitmapLoader
 import com.eliasjunior.textpower.ocr.OcrImageProcessor
 import com.eliasjunior.textpower.ocr.OcrProcessor
@@ -46,11 +48,13 @@ fun OcrRoute() {
     val ocrImageProcessor = remember { OcrImageProcessor() }
     val ocrTextFormatter = remember { OcrTextFormatter() }
     val bitmapLoader = remember(context) { BitmapLoader(context) }
+    val sessionStore = remember(context) { OcrSessionStore(context) }
     val scope = rememberCoroutineScope()
 
     var imageUri by remember { mutableStateOf<Uri?>(null) }
     var loadedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var extractedText by remember { mutableStateOf("") }
+    var sessions by remember { mutableStateOf<List<OcrSession>>(emptyList()) }
     var isProcessing by remember { mutableStateOf(false) }
     var processingStatus by remember { mutableStateOf<String?>(null) }
     var processingProgress by remember { mutableStateOf<Float?>(null) }
@@ -134,12 +138,15 @@ fun OcrRoute() {
     }
 
     LaunchedEffect(imageUri) {
-        loadedBitmap = if (imageUri == null) {
-            null
-        } else {
-            withContext(Dispatchers.IO) {
-                runCatching { bitmapLoader.load(imageUri!!) }.getOrNull()
-            }
+        val uri = imageUri ?: return@LaunchedEffect
+        loadedBitmap = withContext(Dispatchers.IO) {
+            runCatching { bitmapLoader.load(uri) }.getOrNull()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        sessions = withContext(Dispatchers.IO) {
+            sessionStore.loadSessions()
         }
     }
 
@@ -147,6 +154,7 @@ fun OcrRoute() {
         state = OcrUiState(
             previewBitmap = loadedBitmap?.asImageBitmap(),
             extractedText = extractedText,
+            sessions = sessions,
             isProcessing = isProcessing,
             processingStatus = processingStatus,
             processingProgress = processingProgress,
@@ -221,6 +229,32 @@ fun OcrRoute() {
             }
             val chooser = Intent.createChooser(shareIntent, "Share OCR text")
             context.startActivity(chooser)
+        },
+        onSaveSession = {
+            val bitmap = loadedBitmap
+            val text = extractedText.trim()
+            if (bitmap == null || text.isBlank()) {
+                Toast.makeText(context, "Nothing to save yet.", Toast.LENGTH_SHORT).show()
+                return@OcrScreen
+            }
+
+            scope.launch(Dispatchers.IO) {
+                val updated = sessionStore.saveSession(bitmap, text)
+                withContext(Dispatchers.Main) {
+                    sessions = updated
+                    Toast.makeText(context, "Session saved.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        },
+        onOpenSession = { session ->
+            scope.launch(Dispatchers.IO) {
+                val bitmap = sessionStore.loadSessionBitmap(session)
+                withContext(Dispatchers.Main) {
+                    imageUri = null
+                    loadedBitmap = bitmap
+                    extractedText = session.extractedText
+                }
+            }
         },
         onSetPreprocessEnabled = { preprocessEnabled = it },
         onSetFilterByBlocks = { filterByBlocks = it },

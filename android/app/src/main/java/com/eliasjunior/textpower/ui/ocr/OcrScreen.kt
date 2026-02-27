@@ -2,6 +2,7 @@ package com.eliasjunior.textpower.ui.ocr
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -39,10 +42,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import com.eliasjunior.textpower.history.OcrSession
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class OcrUiState(
     val previewBitmap: ImageBitmap? = null,
     val extractedText: String = "",
+    val sessions: List<OcrSession> = emptyList(),
     val isProcessing: Boolean = false,
     val processingStatus: String? = null,
     val processingProgress: Float? = null,
@@ -59,6 +67,8 @@ fun OcrScreen(
     onRecognize: () -> Unit,
     onCopyText: () -> Unit,
     onShareText: () -> Unit,
+    onSaveSession: () -> Unit,
+    onOpenSession: (OcrSession) -> Unit,
     onSetPreprocessEnabled: (Boolean) -> Unit,
     onSetFilterByBlocks: (Boolean) -> Unit,
     onSetMultiPageScanEnabled: (Boolean) -> Unit
@@ -139,6 +149,10 @@ fun OcrScreen(
                 onClick = onShareText,
                 enabled = state.extractedText.isNotBlank()
             ) { Text("Share") }
+            Button(
+                onClick = onSaveSession,
+                enabled = state.extractedText.isNotBlank() && state.previewBitmap != null
+            ) { Text("Save Session") }
         }
         Text(
             text = "Font size",
@@ -168,6 +182,86 @@ fun OcrScreen(
         )
 
         Spacer(modifier = Modifier.height(6.dp))
+
+        Text(text = "History", style = MaterialTheme.typography.titleMedium)
+        if (state.sessions.isEmpty()) {
+            Text(
+                text = "No saved sessions yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                text = "Recent sessions (tap to open)",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (session in state.sessions.take(12)) {
+                    SessionRow(
+                        session = session,
+                        onClick = { onOpenSession(session) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionRow(
+    session: OcrSession,
+    onClick: () -> Unit
+) {
+    val dateText = remember(session.timestampMs) {
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+            .format(Date(session.timestampMs))
+    }
+    val preview = remember(session.extractedText) {
+        session.extractedText
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(120)
+    }
+    val wordCount = remember(session.extractedText) {
+        session.extractedText.split(Regex("\\s+")).count { it.isNotBlank() }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onClick,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = dateText,
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Text(
+                    text = "$wordCount words",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "Open session",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
     }
 }
 
