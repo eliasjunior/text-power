@@ -8,7 +8,7 @@ import java.util.Locale
 
 interface TextSpeaker {
     fun setProgressListener(listener: ProgressListener?)
-    fun start(text: String): SpeakerResult
+    fun start(text: String, startOffset: Int = 0): SpeakerResult
     fun pause(): SpeakerResult
     fun stop(): SpeakerResult
     fun shutdown()
@@ -127,12 +127,20 @@ class AndroidTextSpeaker(
         }
     }
 
-    override fun start(text: String): TextSpeaker.SpeakerResult {
+    override fun start(text: String, startOffset: Int): TextSpeaker.SpeakerResult {
         if (text.isBlank()) {
             return TextSpeaker.SpeakerResult(
                 success = false,
                 state = state,
                 message = "No text to speak."
+            )
+        }
+        val safeStartOffset = startOffset.coerceIn(0, text.length)
+        if (safeStartOffset >= text.length) {
+            return TextSpeaker.SpeakerResult(
+                success = false,
+                state = state,
+                message = "Already at end of text."
             )
         }
 
@@ -152,7 +160,7 @@ class AndroidTextSpeaker(
 
         applySpeakerSettings(tts)
 
-        val chunks = chunkText(text)
+        val chunks = chunkText(text, safeStartOffset)
         if (chunks.isEmpty()) {
             return TextSpeaker.SpeakerResult(false, state, "No text to speak.")
         }
@@ -295,11 +303,23 @@ class AndroidTextSpeaker(
         }
     }
 
-    private fun chunkText(text: String): List<SpeechChunk> {
-        if (text.length <= MAX_CHUNK_CHARS) return listOf(SpeechChunk(text = text, start = 0, endExclusive = text.length))
+    private fun chunkText(text: String, startOffset: Int): List<SpeechChunk> {
+        if (startOffset >= text.length) return emptyList()
+        if (text.length - startOffset <= MAX_CHUNK_CHARS) {
+            val chunkStart = firstNonWhitespaceIndex(text, startOffset, text.length) ?: return emptyList()
+            val chunkEnd = lastNonWhitespaceExclusiveIndex(text, chunkStart, text.length)
+            if (chunkEnd <= chunkStart) return emptyList()
+            return listOf(
+                SpeechChunk(
+                    text = text.substring(chunkStart, chunkEnd),
+                    start = chunkStart,
+                    endExclusive = chunkEnd
+                )
+            )
+        }
 
         val chunks = mutableListOf<SpeechChunk>()
-        var cursor = 0
+        var cursor = startOffset
         while (cursor < text.length) {
             var end = (cursor + MAX_CHUNK_CHARS).coerceAtMost(text.length)
             if (end < text.length) {
@@ -309,20 +329,11 @@ class AndroidTextSpeaker(
                 }
             }
 
-            val rawChunk = text.substring(cursor, end)
-            val localStart = rawChunk.indexOfFirst { !it.isWhitespace() }
-            if (localStart >= 0) {
-                val localEndInclusive = rawChunk.indexOfLast { !it.isWhitespace() }
-                val absStart = cursor + localStart
-                val absEnd = cursor + localEndInclusive + 1
+            val absStart = firstNonWhitespaceIndex(text, cursor, end)
+            if (absStart != null) {
+                val absEnd = lastNonWhitespaceExclusiveIndex(text, absStart, end)
                 if (absEnd > absStart) {
-                    chunks.add(
-                        SpeechChunk(
-                            text = text.substring(absStart, absEnd),
-                            start = absStart,
-                            endExclusive = absEnd
-                        )
-                    )
+                    chunks.add(SpeechChunk(text.substring(absStart, absEnd), absStart, absEnd))
                 }
             }
 
@@ -330,6 +341,21 @@ class AndroidTextSpeaker(
         }
 
         return chunks
+    }
+
+    private fun firstNonWhitespaceIndex(text: String, start: Int, endExclusive: Int): Int? {
+        for (index in start until endExclusive) {
+            if (!text[index].isWhitespace()) return index
+        }
+        return null
+    }
+
+    private fun lastNonWhitespaceExclusiveIndex(text: String, start: Int, endExclusive: Int): Int {
+        var last = endExclusive - 1
+        while (last >= start && text[last].isWhitespace()) {
+            last--
+        }
+        return last + 1
     }
 }
 

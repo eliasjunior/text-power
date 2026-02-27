@@ -73,6 +73,11 @@ fun OcrRoute() {
     var selectedVoiceName by remember { mutableStateOf<String?>(null) }
     var voiceOptions by remember { mutableStateOf<List<SelectionOption>>(emptyList()) }
     var highlightedRange by remember { mutableStateOf<IntRange?>(null) }
+    var resumeCharOffset by remember { mutableStateOf(0) }
+    var resumeTextHash by remember { mutableStateOf("") }
+    var resumePending by remember { mutableStateOf(false) }
+    var isPaused by remember { mutableStateOf(false) }
+    var isPlaying by remember { mutableStateOf(false) }
     var preprocessEnabled by remember { mutableStateOf(true) }
     var filterByBlocks by remember { mutableStateOf(true) }
     var cleaningLevel by remember { mutableStateOf(CleaningLevel.NORMAL) }
@@ -93,11 +98,68 @@ fun OcrRoute() {
             override fun onRangeSpoken(start: Int, endExclusive: Int) {
                 if (endExclusive <= start) return
                 highlightedRange = start until endExclusive
+                resumeCharOffset = endExclusive
             }
         })
         onDispose {
+            val shouldResume = resumePending || isPaused || isPlaying
+            ttsPreferencesStore.save(
+                TtsPreferences(
+                    speechRate = speechRate,
+                    pitch = pitch,
+                    languageTag = "",
+                    voiceName = selectedVoiceName,
+                    resumeCharOffset = resumeCharOffset,
+                    resumeTextHash = if (shouldResume) resumeTextHash else "",
+                    resumePending = shouldResume && resumeTextHash.isNotBlank()
+                )
+            )
             textSpeaker.setProgressListener(null)
             textSpeaker.shutdown()
+        }
+    }
+
+    val persistTtsPreferences = {
+        val shouldResume = resumePending || isPaused || isPlaying
+        ttsPreferencesStore.save(
+            TtsPreferences(
+                speechRate = speechRate,
+                pitch = pitch,
+                languageTag = "",
+                voiceName = selectedVoiceName,
+                resumeCharOffset = resumeCharOffset,
+                resumeTextHash = if (shouldResume) resumeTextHash else "",
+                resumePending = shouldResume && resumeTextHash.isNotBlank()
+            )
+        )
+    }
+
+    val clearResumeState = {
+        highlightedRange = null
+        resumeCharOffset = 0
+        resumeTextHash = ""
+        resumePending = false
+        isPaused = false
+        isPlaying = false
+    }
+
+    val maybeRestoreResumeForText: (String) -> Unit = { text ->
+        val normalized = text.trim()
+        if (normalized.isBlank()) {
+            clearResumeState()
+            persistTtsPreferences()
+        } else {
+            val hash = textHash(normalized)
+            if (resumePending && resumeTextHash.isNotBlank() && resumeTextHash == hash) {
+                resumeCharOffset = resumeCharOffset.coerceIn(0, normalized.length)
+                isPaused = true
+                isPlaying = false
+                playbackStatus = "Resume available from last position."
+                persistTtsPreferences()
+            } else {
+                clearResumeState()
+                persistTtsPreferences()
+            }
         }
     }
 
@@ -106,10 +168,11 @@ fun OcrRoute() {
     ) { uri ->
         imageUri = uri
         extractedText = ""
-        highlightedRange = null
+        clearResumeState()
         processingStatus = null
         processingProgress = null
         playbackStatus = null
+        persistTtsPreferences()
     }
 
     val scannerLauncher = rememberLauncherForActivityResult(
@@ -121,8 +184,9 @@ fun OcrRoute() {
         val scannedUris = scanResult?.pages?.map { it.imageUri }?.filterNotNull().orEmpty()
         imageUri = scannedUris.firstOrNull()
         extractedText = ""
-        highlightedRange = null
+        clearResumeState()
         playbackStatus = null
+        persistTtsPreferences()
 
         if (scannedUris.isNotEmpty()) {
             scope.launch {
@@ -154,10 +218,11 @@ fun OcrRoute() {
                         }
                     }
                     extractedText = outputPages.joinToString("\n\n")
-                    highlightedRange = null
+                    maybeRestoreResumeForText(extractedText)
                 } catch (err: Exception) {
                     extractedText = ""
-                    highlightedRange = null
+                    clearResumeState()
+                    persistTtsPreferences()
                     Toast.makeText(
                         context,
                         "OCR failed: ${err.localizedMessage ?: "unknown error"}",
@@ -188,6 +253,9 @@ fun OcrRoute() {
         speechRate = prefs.speechRate
         pitch = prefs.pitch
         selectedVoiceName = prefs.voiceName
+        resumeCharOffset = prefs.resumeCharOffset.coerceAtLeast(0)
+        resumeTextHash = prefs.resumeTextHash
+        resumePending = prefs.resumePending
 
         textSpeaker.setSpeechRate(speechRate)
         textSpeaker.setPitch(pitch)
@@ -196,17 +264,6 @@ fun OcrRoute() {
         }
 
         voiceOptions = buildPreferredVoiceOptions(textSpeaker.getAvailableVoices())
-    }
-
-    fun persistTtsPreferences() {
-        ttsPreferencesStore.save(
-            TtsPreferences(
-                speechRate = speechRate,
-                pitch = pitch,
-                languageTag = "",
-                voiceName = selectedVoiceName
-            )
-        )
     }
 
     OcrScreen(
@@ -264,11 +321,12 @@ fun OcrRoute() {
                         }
                         val resultText = ocrProcessor.process(prepared).awaitResult()
                         extractedText = ocrTextFormatter.format(resultText, filterByBlocks, cleaningLevel)
-                        highlightedRange = null
+                        maybeRestoreResumeForText(extractedText)
                         playbackStatus = null
                     } catch (err: Exception) {
                         extractedText = ""
-                        highlightedRange = null
+                        clearResumeState()
+                        persistTtsPreferences()
                         Toast.makeText(
                             context,
                             "OCR failed: ${err.localizedMessage ?: "unknown error"}",
@@ -283,11 +341,26 @@ fun OcrRoute() {
             }
         },
         onPlayText = {
+            val safeStartOffset = if (isPaused || resumePending) {
+                resumeCharOffset.coerceIn(0, extractedText.length)
+            } else {
+                0
+            }
             highlightedRange = null
             textSpeaker.setSpeechRate(speechRate)
             textSpeaker.setPitch(pitch)
             textSpeaker.setVoice(selectedVoiceName)
-            val result = textSpeaker.start(extractedText)
+            val result = textSpeaker.start(extractedText, safeStartOffset)
+            if (result.success) {
+                val normalized = extractedText.trim()
+                resumeTextHash = if (normalized.isBlank()) "" else textHash(normalized)
+                resumePending = resumeTextHash.isNotBlank()
+                isPaused = false
+                isPlaying = true
+                persistTtsPreferences()
+            } else {
+                isPlaying = false
+            }
             playbackStatus = result.message ?: when (result.state) {
                 TextSpeaker.SpeakerState.SPEAKING -> "Speaking…"
                 TextSpeaker.SpeakerState.UNINITIALIZED -> "TTS is initializing."
@@ -297,6 +370,16 @@ fun OcrRoute() {
         },
         onPauseText = {
             val result = textSpeaker.pause()
+            if (result.success) {
+                val normalized = extractedText.trim()
+                resumeTextHash = if (normalized.isBlank()) "" else textHash(normalized)
+                resumePending = resumeTextHash.isNotBlank()
+                isPaused = true
+                isPlaying = false
+                persistTtsPreferences()
+            } else {
+                isPlaying = false
+            }
             playbackStatus = result.message ?: when (result.state) {
                 TextSpeaker.SpeakerState.PAUSED -> "Paused."
                 TextSpeaker.SpeakerState.ERROR -> "Pause failed."
@@ -305,7 +388,8 @@ fun OcrRoute() {
         },
         onStopText = {
             val result = textSpeaker.stop()
-            highlightedRange = null
+            clearResumeState()
+            persistTtsPreferences()
             playbackStatus = result.message ?: when (result.state) {
                 TextSpeaker.SpeakerState.STOPPED -> "Stopped."
                 TextSpeaker.SpeakerState.ERROR -> "Stop failed."
@@ -352,7 +436,7 @@ fun OcrRoute() {
                     imageUri = null
                     loadedBitmap = bitmap
                     extractedText = session.extractedText
-                    highlightedRange = null
+                    maybeRestoreResumeForText(extractedText)
                 }
             }
         },
@@ -456,6 +540,10 @@ private fun selectBestVoiceForTag(
 
 private fun normalizeTag(tag: String): String {
     return tag.trim().replace('_', '-').lowercase(Locale.ROOT)
+}
+
+private fun textHash(text: String): String {
+    return text.hashCode().toUInt().toString(16)
 }
 
 private suspend fun com.google.android.gms.tasks.Task<Text>.awaitResult(): Text =
