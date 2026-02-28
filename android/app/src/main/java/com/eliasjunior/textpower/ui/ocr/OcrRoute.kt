@@ -81,7 +81,7 @@ fun OcrRoute() {
     var preprocessEnabled by remember { mutableStateOf(true) }
     var filterByBlocks by remember { mutableStateOf(true) }
     var cleaningLevel by remember { mutableStateOf(CleaningLevel.NORMAL) }
-    var multiPageScanEnabled by remember { mutableStateOf(false) }
+    var multiPageScanEnabled by remember { mutableStateOf(true) }
 
     val scannerOptions = remember(multiPageScanEnabled) {
         GmsDocumentScannerOptions.Builder()
@@ -127,6 +127,7 @@ fun OcrRoute() {
                 pitch = pitch,
                 languageTag = "",
                 voiceName = selectedVoiceName,
+                multiPageScanEnabled = multiPageScanEnabled,
                 resumeCharOffset = resumeCharOffset,
                 resumeTextHash = if (shouldResume) resumeTextHash else "",
                 resumePending = shouldResume && resumeTextHash.isNotBlank()
@@ -253,6 +254,7 @@ fun OcrRoute() {
         speechRate = prefs.speechRate
         pitch = prefs.pitch
         selectedVoiceName = prefs.voiceName
+        multiPageScanEnabled = prefs.multiPageScanEnabled
         resumeCharOffset = prefs.resumeCharOffset.coerceAtLeast(0)
         resumeTextHash = prefs.resumeTextHash
         resumePending = prefs.resumePending
@@ -479,7 +481,10 @@ fun OcrRoute() {
         onSetPreprocessEnabled = { preprocessEnabled = it },
         onSetFilterByBlocks = { filterByBlocks = it },
         onSetCleaningLevel = { cleaningLevel = it },
-        onSetMultiPageScanEnabled = { multiPageScanEnabled = it }
+        onSetMultiPageScanEnabled = {
+            multiPageScanEnabled = it
+            persistTtsPreferences()
+        }
     )
 }
 
