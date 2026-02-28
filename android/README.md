@@ -24,7 +24,7 @@ Android app to:
 From this folder:
 
 ```bash
-cd /Users/eliasjunior/Projects/text-power/android
+cd ~/project-location/text-power/android
 ./gradlew assembleDebug
 ./gradlew installDebug
 ```

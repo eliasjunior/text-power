@@ -1,6 +1,6 @@
 # Android App (ML Kit OCR)
 
-Project path: `/Users/eliasjunior/Projects/text-power/android`
+Project path: `~/project-location/text-power/android`
 
 ## What was generated
 - Kotlin + Jetpack Compose
@@ -11,7 +11,7 @@ Project path: `/Users/eliasjunior/Projects/text-power/android`
 
 ## Open and run
 1. Open Android Studio.
-2. Open folder: `/Users/eliasjunior/Projects/text-power/android`.
+2. Open folder: `~/project-location/text-power/android`.
 3. Let Gradle sync.
 4. Run on your device (USB or wireless debugging).
 
