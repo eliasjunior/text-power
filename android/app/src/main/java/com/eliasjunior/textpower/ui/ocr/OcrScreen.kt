@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -113,6 +114,7 @@ fun OcrScreen(
     ) {
         Text(
             text = "Text Power (ML Kit)",
+            modifier = Modifier.testTag("ocr_title"),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold
         )
@@ -124,11 +126,16 @@ fun OcrScreen(
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onPickImage) { Text("Pick Image") }
-            Button(onClick = onScanDocument, enabled = !state.isProcessing) { Text("Scan Document") }
+            Button(onClick = onPickImage, modifier = Modifier.testTag("pick_image_button")) { Text("Pick Image") }
+            Button(
+                onClick = onScanDocument,
+                enabled = !state.isProcessing,
+                modifier = Modifier.testTag("scan_document_button")
+            ) { Text("Scan Document") }
             Button(
                 onClick = onRecognize,
-                enabled = state.previewBitmap != null && !state.isProcessing
+                enabled = state.previewBitmap != null && !state.isProcessing,
+                modifier = Modifier.testTag("recognize_text_button")
             ) { Text("Recognize Text") }
         }
 
@@ -159,7 +166,8 @@ fun OcrScreen(
         OcrSwitchRow(
             label = "Multi-page scan mode",
             checked = state.multiPageScanEnabled,
-            onCheckedChange = onSetMultiPageScanEnabled
+            onCheckedChange = onSetMultiPageScanEnabled,
+            switchTestTag = "multi_page_toggle"
         )
 
         state.previewBitmap?.let { bitmap ->
@@ -461,10 +469,15 @@ private fun SessionRow(
 private fun OcrSwitchRow(
     label: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    switchTestTag: String? = null
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = if (switchTestTag.isNullOrBlank()) Modifier else Modifier.testTag(switchTestTag)
+        )
         Spacer(modifier = Modifier.width(8.dp))
         Text(text = label, style = MaterialTheme.typography.bodyMedium)
     }

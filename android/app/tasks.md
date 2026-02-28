@@ -29,3 +29,15 @@
 8. **get all test compact the best part, like a summary, LL work, do I need a MCP ?**
 
 If you want, I’ll implement **Step 1 + 2** first (small, high impact, minimal risk).
+
+9. **UI Test Priority (Critical -> Nice-to-have)**
+- App launches + OCR screen renders (`Pick Image`, `Scan Document`, `Recognize Text`).
+- Multi-page scan control is present and toggles.
+- Readable mode core controls (`Play`, `Pause`, `Stop`).
+- Extracted text reader box is visible (including empty placeholder state).
+- Advanced OCR section open/close + inner controls.
+- Voice settings section open/close + rate/pitch/voice controls.
+- Text session settings section open/close + `Copy`/`Share`/`Save Session` + font slider.
+- History section baseline (title + empty state).
+- Resume UX indicator appears when saved resume state matches text.
+- Visual regression smoke checks (optional, later).

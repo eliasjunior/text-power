@@ -54,6 +54,19 @@ android {
     }
 }
 
+configurations.configureEach {
+    resolutionStrategy {
+        force(
+            "androidx.test:core:1.7.0",
+            "androidx.test:core-ktx:1.7.0",
+            "androidx.test:monitor:1.8.0",
+            "androidx.test:runner:1.7.0",
+            "androidx.test.ext:junit:1.3.0",
+            "androidx.test.espresso:espresso-core:3.7.0"
+        )
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -68,6 +81,12 @@ dependencies {
 
     implementation(libs.mlkit.text.recognition)
     implementation(libs.mlkit.doc.scanner)
+
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
